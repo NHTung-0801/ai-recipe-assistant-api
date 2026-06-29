@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: recipe-assistant
+  profiles:
+    active: dev # Tự động kích hoạt profile dev khi chạy ứng dụng ở máy cục bộ

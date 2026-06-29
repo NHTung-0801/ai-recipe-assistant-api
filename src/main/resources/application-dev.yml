@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+spring:
+  data:
+    mongodb:
+      uri: ${MONGO_URI:mongodb://admin:secret@localhost:27017/recipe_assistant?authSource=admin}
+      database: recipe_assistant
+
+gemini:
+  api:
+    key: ${GEMINI_API_KEY}
+    url: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+
+logging:
+  level:
+    root: INFO
+    com.project.recipeassistant: DEBUG # Xem log chi tiết từ các class
+    org.springframework.data.mongodb.core: DEBUG # Xem các câu lệnh truy vấn MongoDB
