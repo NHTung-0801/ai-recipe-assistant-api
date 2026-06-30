@@ -10,10 +10,10 @@ spring:
 gemini:
   api:
     key: ${GEMINI_API_KEY}
-    url: https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+    url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
 
 logging:
   level:
     root: INFO
-    com.project.recipeassistant: DEBUG # Xem log chi tiết từ các class
+    com.project.recipe_assistant: DEBUG # Xem log chi tiết từ các class
     org.springframework.data.mongodb.core: DEBUG # Xem các câu lệnh truy vấn MongoDB

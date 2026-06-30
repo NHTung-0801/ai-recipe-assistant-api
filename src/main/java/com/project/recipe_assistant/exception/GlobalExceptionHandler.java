@@ -53,6 +53,20 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Bắt lỗi: ResourceNotFoundException
+     * Trường hợp xảy ra: Truy vấn theo id (vd: UserHistory id) nhưng không tìm thấy trong DB.
+     * Xử lý: Trả về 404 Not Found.
+     */
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse<Object>> handleResourceNotFound(ResourceNotFoundException ex) {
+        ApiResponse<Object> response = ApiResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .message(ex.getMessage())
+                .build();
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    /**
      * Bắt lỗi: Exception (Lỗi chung / Lỗi hệ thống)
      * Trường hợp xảy ra: Bắt tất cả các lỗi không lường trước được (NullPointerException, rớt database,...).
      * Xử lý: Trả về mã lỗi 500 (Internal Server Error), đóng vai trò như chốt chặn cuối cùng để server không bị crash.
