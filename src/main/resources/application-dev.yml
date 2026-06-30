@@ -12,6 +12,16 @@ gemini:
     key: ${GEMINI_API_KEY}
     url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
 
+# Cấu hình Swagger UI / OpenAPI 3
+springdoc:
+  api-docs:
+    path: /v3/api-docs        # Endpoint JSON cho OpenAPI spec
+  swagger-ui:
+    path: /swagger-ui.html    # Redirect tới /swagger-ui/index.html
+    operations-sorter: method # Sắp xếp endpoint theo HTTP method (GET trước POST)
+    tags-sorter: alpha        # Sắp xếp tag (nhóm controller) theo alphabet
+    display-request-duration: true # Hiển thị thời gian response - hữu ích khi demo
+
 logging:
   level:
     root: INFO

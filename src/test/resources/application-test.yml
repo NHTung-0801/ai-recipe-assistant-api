@@ -1,0 +1,24 @@
+# Profile dành riêng cho test - không gọi external service thật.
+# Mọi giá trị chỉ là placeholder để Spring context load được mà không yêu cầu
+# biến môi trường thật (GEMINI_API_KEY, MONGO_URI...) - quan trọng khi chạy CI.
+spring:
+  data:
+    mongodb:
+      # Cấu hình giả - test thật sự không hit Mongo nhờ AutoConfigure bị exclude bên dưới
+      uri: mongodb://fake:fake@localhost:27017/test_db
+      database: test_db
+  autoconfigure:
+    # Tắt Mongo auto-config trong test - tránh việc Spring cố connect tới Mongo lúc context load
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration
+
+gemini:
+  api:
+    key: test-key
+    url: http://fake-gemini-url
+
+logging:
+  level:
+    root: WARN # Giảm noise khi chạy test
