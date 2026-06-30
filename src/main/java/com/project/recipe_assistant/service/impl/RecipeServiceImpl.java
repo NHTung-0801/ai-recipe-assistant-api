@@ -1,116 +1,58 @@
 package com.project.recipe_assistant.service.impl;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
 import com.project.recipe_assistant.dto.request.IngredientRequest;
 import com.project.recipe_assistant.dto.response.RecipeResponse;
 import com.project.recipe_assistant.dto.response.RecipeSuggestionResponse;
-import com.project.recipe_assistant.exception.AiServiceException;
 import com.project.recipe_assistant.model.Recipe;
 import com.project.recipe_assistant.model.UserHistory;
-import com.project.recipe_assistant.repository.RecipeRepository;
 import com.project.recipe_assistant.repository.UserHistoryRepository;
-import com.project.recipe_assistant.service.GeminiService;
+import com.project.recipe_assistant.service.RecipeCacheService;
 import com.project.recipe_assistant.service.RecipeService;
-import com.project.recipe_assistant.util.PromptBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.List;
 
 /**
- * Triển khai logic nghiệp vụ chính: chỉ huy AI -> parse -> persist -> map sang DTO.
- * Tách rời {@link GeminiService} để service này có thể được test với mock dễ dàng.
+ * Triển khai logic nghiệp vụ chính: chuẩn hoá ingredients -> lấy Recipes (qua cache) ->
+ * persist UserHistory snapshot -> map sang DTO.
+ * <p>
+ * Phần "đắt tiền" (Gemini call + parse JSON + save Recipe) đã được tách sang
+ * {@link RecipeCacheService} để hưởng lợi từ {@code @Cacheable}.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class RecipeServiceImpl implements RecipeService {
 
-    private final GeminiService geminiService;
-    private final RecipeRepository recipeRepository;
+    private final RecipeCacheService recipeCacheService;
     private final UserHistoryRepository userHistoryRepository;
-    private final ObjectMapper objectMapper;
 
     @Override
     public RecipeSuggestionResponse suggestRecipes(IngredientRequest request) {
-        List<String> ingredients = request.getIngredients();
+        // 1. Chuẩn hoá ingredients để cache key ổn định:
+        //    - lowercase: "Ức Gà" và "ức gà" phải hit cùng cache entry
+        //    - sorted: thứ tự nhập không quan trọng về ngữ nghĩa (gà+tỏi == tỏi+gà)
+        List<String> normalized = request.getIngredients().stream()
+                .map(String::trim)
+                .map(String::toLowerCase)
+                .sorted(Comparator.naturalOrder())
+                .toList();
 
-        // 1. Build prompt và gọi Gemini lấy về chuỗi JSON
-        String prompt = PromptBuilder.buildRecipeRequestPrompt(ingredients);
-        String aiRawJson = geminiService.generateContent(prompt);
-        log.debug("Gemini raw response: {}", aiRawJson);
+        // 2. Lấy Recipes - qua cache. Cache miss sẽ tự gọi Gemini + parse + save.
+        List<Recipe> recipes = recipeCacheService.getOrFetchRecipes(normalized);
 
-        // 2. Parse JSON -> List<Recipe>
-        List<Recipe> parsedRecipes = parseRecipesFromAiResponse(aiRawJson);
-
-        // 3. Persist từng Recipe (mỗi recipe sẽ được Mongo cấp _id sau khi save).
-        //    saveAll trả về list các Recipe đã được gắn id — phải dùng list này khi build snapshot.
-        List<Recipe> savedRecipes = recipeRepository.saveAll(parsedRecipes);
-
-        // 4. Snapshot Pattern: nhúng nguyên list Recipe đã save vào UserHistory.
-        //    searchTime sẽ được @CreatedDate (kết hợp @EnableMongoAuditing) tự động sinh khi save.
+        // 3. Luôn save UserHistory mới (mỗi lần search là 1 phiên, dù cache hit hay miss).
+        //    Snapshot Pattern: embed Recipes đã có id vào history.
         UserHistory history = UserHistory.builder()
-                .requestedIngredients(ingredients)
-                .suggestedRecipes(savedRecipes)
+                .requestedIngredients(request.getIngredients()) // Lưu nguyên liệu GỐC từ user
+                .suggestedRecipes(recipes)
                 .build();
         userHistoryRepository.save(history);
 
-        // 5. Map Entity -> DTO trước khi trả về Controller
-        return mapToSuggestionResponse(savedRecipes);
-    }
-
-    /**
-     * Parse chuỗi JSON do Gemini trả về thành {@code List<Recipe>}.
-     * <p>
-     * Có 2 vấn đề thực tế khi làm việc với LLM cần xử lý:
-     * <ul>
-     *   <li><b>Code fence:</b> Gemini hay bọc JSON trong khối <code>```json ... ```</code>
-     *       dù prompt đã yêu cầu trả về JSON thuần. Phải strip trước khi parse.</li>
-     *   <li><b>Nested structure:</b> Theo prompt, JSON có cấu trúc
-     *       <code>{"suggestedRecipes": [...]}</code> — cần lấy đúng nhánh con,
-     *       không deserialize trực tiếp ra <code>List&lt;Recipe&gt;</code>.</li>
-     * </ul>
-     */
-    private List<Recipe> parseRecipesFromAiResponse(String aiRawJson) {
-        try {
-            String cleaned = stripJsonCodeFence(aiRawJson);
-
-            JsonNode root = objectMapper.readTree(cleaned);
-            JsonNode recipesNode = root.path("suggestedRecipes");
-
-            if (recipesNode.isMissingNode() || !recipesNode.isArray()) {
-                throw new AiServiceException(
-                        "JSON trả về không chứa trường 'suggestedRecipes' dạng mảng. Raw: " + aiRawJson);
-            }
-
-            // treeToValue dùng TypeReference để giữ generic type khi deserialize sang List<Recipe>
-            return objectMapper.readerForListOf(Recipe.class).readValue(recipesNode);
-
-        } catch (AiServiceException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            log.error("Lỗi parse JSON từ AI. Raw: {}", aiRawJson, ex);
-            throw new AiServiceException("Dữ liệu AI trả về không đúng định dạng JSON kỳ vọng", ex);
-        }
-    }
-
-    /**
-     * Loại bỏ ký hiệu markdown code fence (```json ... ``` hoặc ``` ... ```) mà LLM hay thêm vào.
-     * Nếu chuỗi không có code fence thì trả nguyên giá trị (đã trim).
-     */
-    private String stripJsonCodeFence(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            // Cắt bỏ dòng "```json" hoặc "```" ở đầu và "```" ở cuối
-            int firstNewline = trimmed.indexOf('\n');
-            int lastFence = trimmed.lastIndexOf("```");
-            if (firstNewline > 0 && lastFence > firstNewline) {
-                return trimmed.substring(firstNewline + 1, lastFence).trim();
-            }
-        }
-        return trimmed;
+        return mapToSuggestionResponse(recipes);
     }
 
     private RecipeSuggestionResponse mapToSuggestionResponse(List<Recipe> recipes) {

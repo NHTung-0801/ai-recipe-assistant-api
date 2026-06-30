@@ -12,6 +12,10 @@ gemini:
     key: ${GEMINI_API_KEY}
     url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
 
+# CORS - danh sách origin được phép gọi API (frontend dev server)
+cors:
+  allowed-origins: http://localhost:5173,http://localhost:3000
+
 # Cấu hình Swagger UI / OpenAPI 3
 springdoc:
   api-docs:

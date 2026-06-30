@@ -2,6 +2,7 @@ package com.project.recipe_assistant.controller;
 
 import com.project.recipe_assistant.constant.AppConstants;
 import com.project.recipe_assistant.dto.response.ApiResponse;
+import com.project.recipe_assistant.dto.response.PageResponse;
 import com.project.recipe_assistant.dto.response.UserHistoryResponse;
 import com.project.recipe_assistant.service.HistoryService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -9,18 +10,19 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
-
 /**
  * REST endpoint truy vấn lịch sử các phiên gợi ý món ăn.
- * GET-only: history là dữ liệu chỉ đọc đối với client.
  */
 @RestController
 @RequestMapping(AppConstants.API_PREFIX_V1 + "/history")
@@ -30,20 +32,31 @@ public class HistoryController {
 
     private final HistoryService historyService;
 
-    /** GET /api/v1/history — danh sách tất cả phiên, mới nhất trước. */
-    @Operation(summary = "Lấy danh sách lịch sử", description = "Trả về toàn bộ lịch sử các phiên gợi ý, sắp xếp mới nhất trước.")
+    /**
+     * GET /api/v1/history?page=0&size=10&sort=searchTime,desc
+     * <p>
+     * Spring tự bind query params vào Pageable. {@code @PageableDefault} đặt default
+     * khi client không truyền: page 0, size 10, sort searchTime giảm dần.
+     */
+    @Operation(
+            summary = "Lấy danh sách lịch sử (có phân trang)",
+            description = "Trả về lịch sử các phiên gợi ý, mặc định sort theo searchTime giảm dần. Client có thể truyền ?page, ?size, ?sort để tuỳ chỉnh."
+    )
     @GetMapping
-    public ResponseEntity<ApiResponse<List<UserHistoryResponse>>> getAll() {
-        List<UserHistoryResponse> data = historyService.getAllHistory();
-        ApiResponse<List<UserHistoryResponse>> response = ApiResponse.<List<UserHistoryResponse>>builder()
-                .status(HttpStatus.OK.value())
-                .message(AppConstants.MSG_SUCCESS)
-                .data(data)
-                .build();
+    public ResponseEntity<ApiResponse<PageResponse<UserHistoryResponse>>> getAll(
+            @PageableDefault(size = 10, sort = "searchTime", direction = Sort.Direction.DESC)
+            Pageable pageable) {
+
+        PageResponse<UserHistoryResponse> data = historyService.getHistory(pageable);
+        ApiResponse<PageResponse<UserHistoryResponse>> response =
+                ApiResponse.<PageResponse<UserHistoryResponse>>builder()
+                        .status(HttpStatus.OK.value())
+                        .message(AppConstants.MSG_SUCCESS)
+                        .data(data)
+                        .build();
         return ResponseEntity.ok(response);
     }
 
-    /** GET /api/v1/history/{id} — chi tiết 1 phiên lịch sử. */
     @Operation(summary = "Lấy chi tiết 1 phiên lịch sử theo id")
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -62,5 +75,19 @@ public class HistoryController {
                 .data(data)
                 .build();
         return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "Xóa 1 phiên lịch sử theo id")
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "204", description = "Xóa thành công"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "404", description = "Không tìm thấy id")
+    })
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable String id) {
+        historyService.deleteHistory(id);
+        // 204 No Content - chuẩn REST cho DELETE thành công, không cần body
+        return ResponseEntity.noContent().build();
     }
 }

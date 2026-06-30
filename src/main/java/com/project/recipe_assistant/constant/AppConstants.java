@@ -16,6 +16,9 @@ public class AppConstants {
                     "Return the response STRICTLY in the following JSON format: " +
                     "{ \"suggestedRecipes\": [ { \"name\": \"\", \"ingredients\": [\"\"], \"instructions\": [\"\"], \"preparationTime\": 0, \"estimatedCalories\": 0, \"protein\": 0.0, \"carbs\": 0.0, \"fat\": 0.0, \"tags\": [\"\"] } ] }";
 
+    // Tên cache (Spring Cache name), dùng cho @Cacheable - tránh hard-code chuỗi rải rác
+    public static final String CACHE_RECIPE_SUGGESTIONS = "recipeSuggestions";
+
     // Ngăn không cho khởi tạo object từ class này vì nó chỉ chứa các hằng số static
     private AppConstants() {}
 }

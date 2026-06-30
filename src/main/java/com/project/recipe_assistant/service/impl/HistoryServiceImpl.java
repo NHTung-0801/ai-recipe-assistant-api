@@ -1,5 +1,6 @@
 package com.project.recipe_assistant.service.impl;
 
+import com.project.recipe_assistant.dto.response.PageResponse;
 import com.project.recipe_assistant.dto.response.RecipeResponse;
 import com.project.recipe_assistant.dto.response.UserHistoryResponse;
 import com.project.recipe_assistant.exception.ResourceNotFoundException;
@@ -8,6 +9,7 @@ import com.project.recipe_assistant.model.UserHistory;
 import com.project.recipe_assistant.repository.UserHistoryRepository;
 import com.project.recipe_assistant.service.HistoryService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
@@ -20,10 +22,10 @@ public class HistoryServiceImpl implements HistoryService {
     private final UserHistoryRepository userHistoryRepository;
 
     @Override
-    public List<UserHistoryResponse> getAllHistory() {
-        return userHistoryRepository.findAllByOrderBySearchTimeDesc().stream()
-                .map(this::toResponse)
-                .toList();
+    public PageResponse<UserHistoryResponse> getHistory(Pageable pageable) {
+        return PageResponse.from(
+                userHistoryRepository.findBy(pageable),
+                this::toResponse);
     }
 
     @Override
@@ -32,6 +34,15 @@ public class HistoryServiceImpl implements HistoryService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Không tìm thấy lịch sử với id: " + id));
         return toResponse(history);
+    }
+
+    @Override
+    public void deleteHistory(String id) {
+        // Check tồn tại trước khi xóa - để trả 404 thay vì silently no-op
+        if (!userHistoryRepository.existsById(id)) {
+            throw new ResourceNotFoundException("Không tìm thấy lịch sử với id: " + id);
+        }
+        userHistoryRepository.deleteById(id);
     }
 
     private UserHistoryResponse toResponse(UserHistory h) {

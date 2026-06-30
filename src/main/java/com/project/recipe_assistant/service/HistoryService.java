@@ -1,8 +1,8 @@
 package com.project.recipe_assistant.service;
 
+import com.project.recipe_assistant.dto.response.PageResponse;
 import com.project.recipe_assistant.dto.response.UserHistoryResponse;
-
-import java.util.List;
+import org.springframework.data.domain.Pageable;
 
 /**
  * Service truy vấn lịch sử các phiên gợi ý món ăn của người dùng.
@@ -10,9 +10,12 @@ import java.util.List;
  */
 public interface HistoryService {
 
-    /** Trả về tất cả lịch sử, mới nhất trước. */
-    List<UserHistoryResponse> getAllHistory();
+    /** Trả về lịch sử có phân trang, mặc định sort theo searchTime desc. */
+    PageResponse<UserHistoryResponse> getHistory(Pageable pageable);
 
     /** Trả về 1 phiên lịch sử theo id; ném ResourceNotFoundException nếu không có. */
     UserHistoryResponse getHistoryById(String id);
+
+    /** Xóa 1 phiên lịch sử theo id; ném ResourceNotFoundException nếu không có. */
+    void deleteHistory(String id);
 }

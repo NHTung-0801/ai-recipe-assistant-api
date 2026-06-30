@@ -1,5 +1,6 @@
 package com.project.recipe_assistant.service.impl;
 
+import com.project.recipe_assistant.dto.response.PageResponse;
 import com.project.recipe_assistant.dto.response.UserHistoryResponse;
 import com.project.recipe_assistant.exception.ResourceNotFoundException;
 import com.project.recipe_assistant.model.Recipe;
@@ -11,6 +12,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,14 +24,11 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Unit test cho {@link HistoryServiceImpl}.
- * <p>
- * Mock repository - test riêng logic mapping Entity -> DTO và xử lý not-found.
- * KHÔNG cần Spring context vì service không có magic Spring nào (chỉ inject thường).
- */
 @ExtendWith(MockitoExtension.class)
 class HistoryServiceImplTest {
 
@@ -36,8 +39,8 @@ class HistoryServiceImplTest {
     private HistoryServiceImpl historyService;
 
     @Test
-    @DisplayName("getAllHistory: map đúng toàn bộ trường từ UserHistory sang DTO")
-    void getAllHistory_shouldMapAllFieldsCorrectly() {
+    @DisplayName("getHistory: map đúng Page<UserHistory> sang PageResponse<DTO> với metadata đầy đủ")
+    void getHistory_shouldMapPageWithMetadata() {
         Recipe recipe = Recipe.builder()
                 .id("recipe-1").name("Gà nướng").preparationTime(30)
                 .estimatedCalories(400).protein(45.0).carbs(10.0).fat(15.0)
@@ -48,40 +51,54 @@ class HistoryServiceImplTest {
                 .suggestedRecipes(List.of(recipe))
                 .searchTime(LocalDateTime.of(2026, 6, 30, 10, 0))
                 .build();
-        when(userHistoryRepository.findAllByOrderBySearchTimeDesc()).thenReturn(List.of(history));
 
-        List<UserHistoryResponse> result = historyService.getAllHistory();
+        Pageable pageable = PageRequest.of(0, 10, Sort.by("searchTime").descending());
+        // PageImpl với totalElements=25 để verify metadata (totalPages, last) tính đúng
+        Page<UserHistory> page = new PageImpl<>(List.of(history), pageable, 25);
+        when(userHistoryRepository.findBy(pageable)).thenReturn(page);
 
-        assertThat(result).hasSize(1);
-        UserHistoryResponse dto = result.get(0);
-        assertThat(dto.getId()).isEqualTo("hist-1");
-        assertThat(dto.getRequestedIngredients()).containsExactly("gà", "muối");
-        assertThat(dto.getSuggestedRecipes()).hasSize(1);
-        assertThat(dto.getSuggestedRecipes().get(0).getName()).isEqualTo("Gà nướng");
-        assertThat(dto.getSuggestedRecipes().get(0).getProtein()).isEqualTo(45.0);
+        PageResponse<UserHistoryResponse> result = historyService.getHistory(pageable);
+
+        assertThat(result.getContent()).hasSize(1);
+        assertThat(result.getContent().get(0).getId()).isEqualTo("hist-1");
+        assertThat(result.getContent().get(0).getSuggestedRecipes().get(0).getName()).isEqualTo("Gà nướng");
+        // Verify metadata pagination
+        assertThat(result.getPage()).isEqualTo(0);
+        assertThat(result.getSize()).isEqualTo(10);
+        assertThat(result.getTotalElements()).isEqualTo(25);
+        assertThat(result.getTotalPages()).isEqualTo(3); // ceil(25/10)
+        assertThat(result.isFirst()).isTrue();
+        assertThat(result.isLast()).isFalse();
     }
 
     @Test
-    @DisplayName("getAllHistory: list rỗng khi repository trả empty")
-    void getAllHistory_shouldReturnEmptyList_whenNoHistory() {
-        when(userHistoryRepository.findAllByOrderBySearchTimeDesc()).thenReturn(List.of());
+    @DisplayName("getHistory: trả về page rỗng khi không có dữ liệu")
+    void getHistory_shouldReturnEmptyPage_whenNoData() {
+        Pageable pageable = PageRequest.of(0, 10);
+        when(userHistoryRepository.findBy(pageable))
+                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
 
-        assertThat(historyService.getAllHistory()).isEmpty();
+        PageResponse<UserHistoryResponse> result = historyService.getHistory(pageable);
+
+        assertThat(result.getContent()).isEmpty();
+        assertThat(result.getTotalElements()).isZero();
     }
 
     @Test
-    @DisplayName("getAllHistory: xử lý null suggestedRecipes mà không NPE")
-    void getAllHistory_shouldHandleNullSuggestedRecipes() {
+    @DisplayName("getHistory: xử lý null suggestedRecipes mà không NPE")
+    void getHistory_shouldHandleNullSuggestedRecipes() {
         // Edge case: UserHistory cũ trong DB có suggestedRecipes = null
         UserHistory history = UserHistory.builder()
                 .id("hist-1").requestedIngredients(List.of("a"))
                 .suggestedRecipes(null)
                 .build();
-        when(userHistoryRepository.findAllByOrderBySearchTimeDesc()).thenReturn(List.of(history));
+        Pageable pageable = PageRequest.of(0, 10);
+        when(userHistoryRepository.findBy(pageable))
+                .thenReturn(new PageImpl<>(List.of(history), pageable, 1));
 
-        List<UserHistoryResponse> result = historyService.getAllHistory();
+        PageResponse<UserHistoryResponse> result = historyService.getHistory(pageable);
 
-        assertThat(result.get(0).getSuggestedRecipes()).isEmpty();
+        assertThat(result.getContent().get(0).getSuggestedRecipes()).isEmpty();
     }
 
     @Test
@@ -103,5 +120,28 @@ class HistoryServiceImplTest {
         assertThatThrownBy(() -> historyService.getHistoryById("missing"))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessageContaining("missing");
+    }
+
+    @Test
+    @DisplayName("deleteHistory: xóa thành công khi id tồn tại")
+    void deleteHistory_shouldDelete_whenExists() {
+        when(userHistoryRepository.existsById("h-1")).thenReturn(true);
+
+        historyService.deleteHistory("h-1");
+
+        verify(userHistoryRepository).deleteById("h-1");
+    }
+
+    @Test
+    @DisplayName("deleteHistory: ném ResourceNotFoundException khi id không tồn tại (không silent no-op)")
+    void deleteHistory_shouldThrow_whenNotFound() {
+        when(userHistoryRepository.existsById("missing")).thenReturn(false);
+
+        assertThatThrownBy(() -> historyService.deleteHistory("missing"))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("missing");
+
+        // Verify KHÔNG gọi deleteById khi không tồn tại
+        verify(userHistoryRepository, never()).deleteById(anyString());
     }
 }

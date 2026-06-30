@@ -5,9 +5,8 @@ import com.project.recipe_assistant.dto.response.RecipeSuggestionResponse;
 import com.project.recipe_assistant.exception.AiServiceException;
 import com.project.recipe_assistant.model.Recipe;
 import com.project.recipe_assistant.model.UserHistory;
-import com.project.recipe_assistant.repository.RecipeRepository;
 import com.project.recipe_assistant.repository.UserHistoryRepository;
-import com.project.recipe_assistant.service.GeminiService;
+import com.project.recipe_assistant.service.RecipeCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,9 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
-import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 
@@ -30,29 +27,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit test cho {@link RecipeServiceImpl}.
+ * Unit test cho {@link RecipeServiceImpl} sau khi refactor caching.
  * <p>
- * Đây là test quan trọng nhất vì RecipeServiceImpl chứa logic parse JSON từ AI -
- * loại logic dễ bug nhất khi LLM thay đổi format output. Mỗi test bám một invariant
- * cụ thể của hệ thống (snapshot pattern, parse code-fence, throw đúng exception).
- * <p>
- * Dùng {@link Spy} cho ObjectMapper vì cần Jackson thực để parse JSON thật, chỉ
- * mock những thứ có side-effect (Gemini call, DB save).
+ * Service này giờ chỉ làm 3 việc: normalize ingredients, gọi cache service, save UserHistory.
+ * Logic parse JSON / gọi Gemini đã chuyển sang {@link RecipeCacheServiceImplTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class RecipeServiceImplTest {
 
     @Mock
-    private GeminiService geminiService;
-
-    @Mock
-    private RecipeRepository recipeRepository;
+    private RecipeCacheService recipeCacheService;
 
     @Mock
     private UserHistoryRepository userHistoryRepository;
-
-    @Spy
-    private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
     private RecipeServiceImpl recipeService;
@@ -62,131 +49,75 @@ class RecipeServiceImplTest {
     @BeforeEach
     void setUp() {
         request = new IngredientRequest();
-        request.setIngredients(List.of("ức gà", "tỏi"));
+        request.setIngredients(List.of("Ức Gà", "tỏi"));
     }
 
     @Test
-    @DisplayName("suggestRecipes: parse được JSON sạch và trả về DTO đầy đủ chỉ số dinh dưỡng")
-    void suggestRecipes_shouldParseCleanJsonAndReturnDto() {
-        String cleanJson = """
-                {
-                  "suggestedRecipes": [
-                    {
-                      "name": "Gà áp chảo",
-                      "ingredients": ["ức gà", "tỏi"],
-                      "instructions": ["Ướp gà", "Áp chảo"],
-                      "preparationTime": 20,
-                      "estimatedCalories": 350,
-                      "protein": 45.0,
-                      "carbs": 5.0,
-                      "fat": 12.0,
-                      "tags": ["Tăng cơ"]
-                    }
-                  ]
-                }
-                """;
-        when(geminiService.generateContent(any())).thenReturn(cleanJson);
-        // saveAll trả lại nguyên list - mô phỏng việc Mongo gắn id cho từng recipe
-        when(recipeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+    @DisplayName("suggestRecipes: chuẩn hoá ingredients (lowercase + sort) trước khi gọi cache")
+    void suggestRecipes_shouldNormalizeIngredientsForCacheKey() {
+        when(recipeCacheService.getOrFetchRecipes(anyList()))
+                .thenReturn(List.of(buildRecipe("Gà nướng")));
 
-        RecipeSuggestionResponse response = recipeService.suggestRecipes(request);
+        recipeService.suggestRecipes(request);
 
-        assertThat(response.getSuggestedRecipes()).hasSize(1);
-        var dto = response.getSuggestedRecipes().get(0);
-        assertThat(dto.getName()).isEqualTo("Gà áp chảo");
-        assertThat(dto.getProtein()).isEqualTo(45.0);
-        assertThat(dto.getEstimatedCalories()).isEqualTo(350);
-        assertThat(dto.getTags()).containsExactly("Tăng cơ");
-    }
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> captor = ArgumentCaptor.forClass(List.class);
+        verify(recipeCacheService).getOrFetchRecipes(captor.capture());
 
-    @Test
-    @DisplayName("suggestRecipes: strip code fence ```json...``` mà Gemini hay bọc quanh JSON")
-    void suggestRecipes_shouldStripJsonCodeFence() {
-        // Đây là failure mode thực tế: dù prompt yêu cầu JSON thuần,
-        // Gemini đôi khi vẫn bọc code fence theo thói quen markdown
-        String fencedJson = """
-                ```json
-                {
-                  "suggestedRecipes": [
-                    {"name": "Test", "ingredients": [], "instructions": [], "preparationTime": 0,
-                     "estimatedCalories": 100, "protein": 1.0, "carbs": 1.0, "fat": 1.0, "tags": []}
-                  ]
-                }
-                ```
-                """;
-        when(geminiService.generateContent(any())).thenReturn(fencedJson);
-        when(recipeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
-
-        RecipeSuggestionResponse response = recipeService.suggestRecipes(request);
-
-        assertThat(response.getSuggestedRecipes()).hasSize(1);
-        assertThat(response.getSuggestedRecipes().get(0).getName()).isEqualTo("Test");
+        // Invariant cache: cùng combo nguyên liệu phải tạo cùng key bất kể case và thứ tự
+        assertThat(captor.getValue()).containsExactly("tỏi", "ức gà");
     }
 
     @Test
     @DisplayName("suggestRecipes: save UserHistory với suggestedRecipes EMBED (Snapshot Pattern)")
     void suggestRecipes_shouldEmbedRecipesIntoUserHistory() {
-        String json = """
-                {"suggestedRecipes": [
-                  {"name": "A", "ingredients": [], "instructions": [], "preparationTime": 0,
-                   "estimatedCalories": 0, "protein": 0, "carbs": 0, "fat": 0, "tags": []}
-                ]}
-                """;
-        when(geminiService.generateContent(any())).thenReturn(json);
-        when(recipeRepository.saveAll(anyList())).thenAnswer(inv -> {
-            // Mô phỏng Mongo gán id sau khi save - quan trọng cho test snapshot
-            List<Recipe> saved = inv.getArgument(0);
-            saved.get(0).setId("generated-id");
-            return saved;
-        });
+        Recipe recipe = buildRecipe("Gà");
+        recipe.setId("rec-1");
+        when(recipeCacheService.getOrFetchRecipes(anyList())).thenReturn(List.of(recipe));
 
         recipeService.suggestRecipes(request);
 
-        // Bắt object truyền vào userHistoryRepository.save để verify snapshot
         ArgumentCaptor<UserHistory> captor = ArgumentCaptor.forClass(UserHistory.class);
         verify(userHistoryRepository).save(captor.capture());
 
         UserHistory saved = captor.getValue();
-        assertThat(saved.getRequestedIngredients()).containsExactly("ức gà", "tỏi");
+        // History phải lưu nguyên liệu GỐC từ user (không phải bản đã normalize) - audit chính xác
+        assertThat(saved.getRequestedIngredients()).containsExactly("Ức Gà", "tỏi");
         assertThat(saved.getSuggestedRecipes()).hasSize(1);
-        // Đây là invariant chính của Snapshot Pattern: history phải embed Recipe ĐÃ có id,
-        // tức là UserHistory chụp lại trạng thái Recipe TẠI THỜI ĐIỂM truy vấn
-        assertThat(saved.getSuggestedRecipes().get(0).getId()).isEqualTo("generated-id");
+        assertThat(saved.getSuggestedRecipes().get(0).getId()).isEqualTo("rec-1");
     }
 
     @Test
-    @DisplayName("suggestRecipes: ném AiServiceException khi JSON thiếu trường 'suggestedRecipes'")
-    void suggestRecipes_shouldThrowAiServiceException_whenJsonStructureWrong() {
-        when(geminiService.generateContent(any())).thenReturn("""
-                {"wrongField": []}
-                """);
+    @DisplayName("suggestRecipes: trả về DTO đúng các trường dinh dưỡng")
+    void suggestRecipes_shouldMapNutritionFieldsToDto() {
+        Recipe recipe = Recipe.builder()
+                .id("r-1").name("Gà").protein(45.0).carbs(5.0).fat(12.0)
+                .estimatedCalories(350).preparationTime(20)
+                .build();
+        when(recipeCacheService.getOrFetchRecipes(anyList())).thenReturn(List.of(recipe));
 
-        assertThatThrownBy(() -> recipeService.suggestRecipes(request))
-                .isInstanceOf(AiServiceException.class)
-                .hasMessageContaining("suggestedRecipes");
+        RecipeSuggestionResponse response = recipeService.suggestRecipes(request);
 
-        // Đảm bảo KHÔNG save gì cả khi parse fail - tránh polluting DB
-        verify(recipeRepository, times(0)).saveAll(anyList());
-        verify(userHistoryRepository, times(0)).save(any());
+        var dto = response.getSuggestedRecipes().get(0);
+        assertThat(dto.getName()).isEqualTo("Gà");
+        assertThat(dto.getProtein()).isEqualTo(45.0);
+        assertThat(dto.getEstimatedCalories()).isEqualTo(350);
     }
 
     @Test
-    @DisplayName("suggestRecipes: ném AiServiceException khi JSON malformed")
-    void suggestRecipes_shouldThrowAiServiceException_whenJsonMalformed() {
-        when(geminiService.generateContent(any())).thenReturn("not a json at all {{{");
+    @DisplayName("suggestRecipes: propagate exception từ cache service (không nuốt lỗi)")
+    void suggestRecipes_shouldPropagateCacheServiceException() {
+        when(recipeCacheService.getOrFetchRecipes(anyList()))
+                .thenThrow(new AiServiceException("Gemini failed"));
 
         assertThatThrownBy(() -> recipeService.suggestRecipes(request))
                 .isInstanceOf(AiServiceException.class);
+
+        // Khi cache service fail, KHÔNG save history rác
+        verify(userHistoryRepository, times(0)).save(any());
     }
 
-    @Test
-    @DisplayName("suggestRecipes: propagate AiServiceException từ GeminiService (không nuốt lỗi)")
-    void suggestRecipes_shouldPropagateGeminiException() {
-        when(geminiService.generateContent(any()))
-                .thenThrow(new AiServiceException("Gemini timeout"));
-
-        assertThatThrownBy(() -> recipeService.suggestRecipes(request))
-                .isInstanceOf(AiServiceException.class)
-                .hasMessageContaining("Gemini timeout");
+    private Recipe buildRecipe(String name) {
+        return Recipe.builder().name(name).build();
     }
 }
